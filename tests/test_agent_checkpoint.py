@@ -72,9 +72,16 @@ class AgentAndCheckpointTests(unittest.TestCase):
             trainer = Trainer(self.config(), base_dir=folder)
             trainer.run_steps(20)
             weights = trainer.agent.weights.copy()
+            position = trainer.environment.agent_state
+            previous_action = trainer.environment.previous_action
+            current_action = trainer.current_action
+            rng_state = trainer.agent.rng.bit_generator.state
             snapshot = trainer.apply_environment_configuration({(1, 1), (2, 1)}, (0, 0), (5, 4), "none")
             np.testing.assert_array_equal(trainer.agent.weights, weights)
-            self.assertEqual(snapshot["agent_state"], (0, 0))
+            self.assertEqual(snapshot["agent_state"], position)
+            self.assertEqual(trainer.environment.previous_action, previous_action)
+            self.assertEqual(trainer.current_action, current_action)
+            self.assertEqual(trainer.agent.rng.bit_generator.state, rng_state)
             self.assertEqual(snapshot["goal"], (5, 4))
             self.assertEqual(snapshot["manual_wind_direction"], "none")
 
@@ -87,6 +94,21 @@ class AgentAndCheckpointTests(unittest.TestCase):
             self.assertEqual(trainer.environment.agent_state, position)
             self.assertEqual(snapshot["manual_wind_direction"], "left")
             self.assertEqual(trainer.environment.config.max_wind_strength, 2)
+
+    def test_environment_apply_preserves_policy_when_policy_state_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as folder:
+            trainer = Trainer(self.config(), base_dir=folder)
+            trainer.run_steps(40)
+            before = trainer.snapshot()
+            layout = set(trainer.environment.context_maps[trainer.environment.context_index])
+            start = next(
+                (x, y) for y in range(trainer.environment.height) for x in range(trainer.environment.width)
+                if (x, y) not in layout and (x, y) != trainer.environment.goal
+            )
+            after = trainer.apply_environment_configuration(
+                layout, start, trainer.environment.goal, "none"
+            )
+            self.assertEqual(after["policy_probabilities"], before["policy_probabilities"])
 
 
 if __name__ == "__main__":

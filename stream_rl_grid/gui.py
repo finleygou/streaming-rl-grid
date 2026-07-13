@@ -611,18 +611,21 @@ class TrainingPanel:
                     probabilities = policies[y][x]
                     cx, cy = ox + (x + 0.5) * cell, oy + (y + 0.5) * cell
                     for action, (dx, dy) in enumerate(directions):
-                        length = 0.5 * cell * max(0.0, min(1.0, float(probabilities[action])))
-                        if length > 0.5:
+                        length = 0.42 * cell * max(0.0, min(1.0, float(probabilities[action])))
+                        if length > 0.35:
                             canvas.create_line(
                                 cx, cy, cx + dx * length, cy + dy * length,
-                                fill=policy_color, width=max(1, int(cell * 0.035)), arrow=tk.LAST,
-                                arrowshape=(max(4, int(cell * 0.12)), max(5, int(cell * 0.14)),
-                                            max(2, int(cell * 0.06))),
+                                fill=policy_color, width=max(1, int(cell * 0.028)), capstyle=tk.ROUND,
                             )
-                    radius = 0.5 * cell * max(0.0, min(1.0, float(probabilities[4])))
-                    if radius > 0.5:
+                    stay_probability = max(0.0, min(1.0, float(probabilities[4])))
+                    radius = 0.11 * cell * stay_probability
+                    if stay_probability <= 1e-12 or radius < 1.25:
+                        dot_radius = max(1.0, min(2.0, cell * 0.025))
+                        canvas.create_oval(cx - dot_radius, cy - dot_radius, cx + dot_radius, cy + dot_radius,
+                                           fill=policy_color, outline=policy_color)
+                    else:
                         canvas.create_oval(cx - radius, cy - radius, cx + radius, cy + radius,
-                                           outline=policy_color, width=max(1, int(cell * 0.035)))
+                                           outline=policy_color, width=max(1, int(cell * 0.025)))
 
         start = tuple(snapshot.get("start_position", (-1, -1)))
         if 0 <= start[0] < width and 0 <= start[1] < height:

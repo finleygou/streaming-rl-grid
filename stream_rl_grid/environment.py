@@ -157,7 +157,7 @@ class ContinualWindyGridWorld:
         wind_direction: str,
         replace_maps: bool = True,
     ) -> None:
-        """Atomically apply a user-authored map to the live continuing environment."""
+        """Atomically edit the environment without resetting the continuing agent state."""
         layout = {(int(x), int(y)) for x, y in obstacles}
         start = (int(start[0]), int(start[1]))
         goal = (int(goal[0]), int(goal[1]))
@@ -187,9 +187,10 @@ class ContinualWindyGridWorld:
         self.config.manual_wind_direction = wind_direction
         self.start_position = start
         self.goal = goal
-        self.agent_state = start
-        self.dormant_obstacle = None
-        self.previous_action = NO_ACTION
+        # A live edit must not teleport the agent or change the policy slice selected by
+        # previous_action. If its current cell becomes blocked, use the same dormant-cell
+        # rule as a scheduled context switch: the obstacle activates after the agent leaves.
+        self.dormant_obstacle = self.agent_state if self.agent_state in self.context_maps[self.context_index] else None
         self.last_events = ["manual_environment_update"]
 
     def _advance_schedules(self) -> None:

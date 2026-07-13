@@ -10,11 +10,11 @@ WIND_CHOICES = ("auto", "up", "right", "down", "left", "none")
 
 @dataclass
 class EnvironmentConfig:
-    width: int = 10
-    height: int = 7
-    obstacle_count: int = 8
+    width: int = 5
+    height: int = 5
+    obstacle_count: int = 3
     num_contexts: int = 3
-    profile: str = "combined"
+    profile: str = "customize"
     seed: int = 0
     reward_goal: float = 10.0
     reward_collision: float = -5.0
@@ -27,7 +27,7 @@ class EnvironmentConfig:
     goal_path: Optional[List[List[int]]] = None
     start_position: Optional[List[int]] = None
     goal_position: Optional[List[int]] = None
-    manual_wind_direction: str = "auto"
+    manual_wind_direction: str = "none"
 
     def validate(self) -> None:
         if self.width < 3 or self.height < 3:

@@ -147,7 +147,6 @@ class Trainer:
                 obstacles, start, goal, wind_direction, replace_maps=replace_maps
             )
             self.current_observation = self.environment.observation()
-            self.current_action = self.agent.select_action(self.current_observation)
             return self.snapshot()
 
     def apply_wind(self, direction: str, strength: int) -> Dict[str, Any]:

@@ -67,13 +67,28 @@ class EnvironmentTests(unittest.TestCase):
 
     def test_manual_environment_update_is_immediate_and_persistent(self):
         env = self.make_env(max_wind_strength=1)
+        env.agent_state = (3, 3)
+        env.previous_action = 2
         env.apply_manual_configuration({(2, 2)}, (0, 0), (4, 4), "right")
         self.assertEqual(env.active_obstacles, {(2, 2)})
-        self.assertEqual(env.agent_state, (0, 0))
+        self.assertEqual(env.agent_state, (3, 3))
+        self.assertEqual(env.previous_action, 2)
         self.assertEqual(env.start_position, (0, 0))
         self.assertEqual(env.goal, (4, 4))
         self.assertEqual(env.wind_vector((2, 2)), (1, 0))
         self.assertEqual(env.config.obstacle_count, 1)
+
+    def test_live_obstacle_on_agent_cell_stays_dormant_until_departure(self):
+        env = self.make_env(max_wind_strength=0)
+        env.agent_state = (2, 2)
+        env.goal = (4, 4)
+        env.apply_manual_configuration({(2, 2)}, (0, 0), (4, 4), "none")
+        self.assertEqual(env.agent_state, (2, 2))
+        self.assertEqual(env.dormant_obstacle, (2, 2))
+        self.assertNotIn((2, 2), env.active_obstacles)
+        env.step(1)
+        self.assertIsNone(env.dormant_obstacle)
+        self.assertIn((2, 2), env.active_obstacles)
 
     def test_customize_profile_does_not_advance_automatic_schedules(self):
         env = self.make_env(profile="customize", wind_period=1, target_move_interval=1,
