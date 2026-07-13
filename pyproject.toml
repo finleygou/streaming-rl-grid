@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stream-rl-grid"
+version = "0.1.0"
+description = "Streaming differential Sarsa(lambda) with TIDBD in a continual non-stationary windy grid world"
+requires-python = ">=3.9"
+dependencies = [
+  "numpy>=1.21",
+  "matplotlib>=3.5",
+]
+
+[project.scripts]
+stream-rl-grid = "stream_rl_grid.gui:main"
+stream-rl-grid-headless = "stream_rl_grid.cli:main"
+stream-rl-grid-benchmark = "stream_rl_grid.benchmark:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["stream_rl_grid*"]
