@@ -17,6 +17,7 @@ ACTIONS: Tuple[Coord, ...] = ((0, -1), (1, 0), (0, 1), (-1, 0), (0, 0))
 ACTION_NAMES: Tuple[str, ...] = ("up", "right", "down", "left", "stay")
 NO_ACTION = len(ACTIONS)
 WIND_DIRECTIONS: Tuple[Coord, ...] = ((0, -1), (1, 0), (0, 1), (-1, 0))
+WIND_BY_NAME = dict(zip(("up", "right", "down", "left"), WIND_DIRECTIONS))
 
 
 class ContinualWindyGridWorld:
@@ -35,8 +36,9 @@ class ContinualWindyGridWorld:
         self.goal_path_index = 0
         self.goal_path_direction = 1
         self.dormant_obstacle: Optional[Coord] = None
-        self.goal: Coord = self._first_legal_goal()
-        self.agent_state: Coord = self._random_legal_state(exclude={self.goal})
+        self.goal: Coord = self._initial_goal()
+        self.start_position: Coord = self._initial_start()
+        self.agent_state: Coord = self.start_position
         self.previous_action = NO_ACTION
         self.last_events: List[str] = []
 
@@ -74,8 +76,9 @@ class ContinualWindyGridWorld:
         self.goal_path_index = 0
         self.goal_path_direction = 1
         self.dormant_obstacle = None
-        self.goal = self._first_legal_goal()
-        self.agent_state = self._random_legal_state(exclude={self.goal})
+        self.goal = self._initial_goal()
+        self.start_position = self._initial_start()
+        self.agent_state = self.start_position
         self.previous_action = NO_ACTION
         self.last_events = ["reset"]
         return self.observation(), self._info(False, False, (0, 0))
@@ -118,7 +121,7 @@ class ContinualWindyGridWorld:
             self.dormant_obstacle = None
 
         if reached_goal:
-            self.agent_state = self._random_legal_state(exclude={self.goal})
+            self.agent_state = self._restart_state()
             if self.dormant_obstacle is not None and self.agent_state != self.dormant_obstacle:
                 self.dormant_obstacle = None
 
@@ -132,15 +135,62 @@ class ContinualWindyGridWorld:
         return self.observation(), float(reward), False, False, info
 
     def wind_vector(self, state: Coord) -> Coord:
-        if self.config.max_wind_strength == 0:
+        manual = self.config.manual_wind_direction
+        if self.config.max_wind_strength == 0 or manual == "none":
             return (0, 0)
-        phase = self.wind_phase if self.config.profile in ("seasonal_wind", "combined") else 0
-        direction = WIND_DIRECTIONS[phase]
+        if manual == "auto":
+            phase = self.wind_phase if self.config.profile in ("seasonal_wind", "combined") else 0
+            direction = WIND_DIRECTIONS[phase]
+        else:
+            direction = WIND_BY_NAME[manual]
         axis_value = state[0] if direction[0] == 0 else state[1]
         axis_size = self.width if direction[0] == 0 else self.height
         center_distance = abs((axis_value + 0.5) / axis_size - 0.5)
         strength = int(round(self.config.max_wind_strength * max(0.0, 1.0 - center_distance / 0.5)))
         return direction[0] * strength, direction[1] * strength
+
+    def apply_manual_configuration(
+        self,
+        obstacles: Iterable[Coord],
+        start: Coord,
+        goal: Coord,
+        wind_direction: str,
+        replace_maps: bool = True,
+    ) -> None:
+        """Atomically apply a user-authored map to the live continuing environment."""
+        layout = {(int(x), int(y)) for x, y in obstacles}
+        start = (int(start[0]), int(start[1]))
+        goal = (int(goal[0]), int(goal[1]))
+        if wind_direction not in ("auto", "up", "right", "down", "left", "none"):
+            raise ValueError("Unknown wind direction: %s" % wind_direction)
+        if len(layout) > self.width * self.height - 2:
+            raise ValueError("Obstacle count leaves fewer than two legal cells.")
+        if any(not self._in_bounds(point) for point in layout | {start, goal}):
+            raise ValueError("All obstacle, start, and goal coordinates must be inside the grid.")
+        if start == goal:
+            raise ValueError("Start and goal coordinates must differ.")
+        if start in layout or goal in layout:
+            raise ValueError("Start and goal coordinates cannot be obstacles.")
+        if not self.free_cells_connected(layout):
+            raise ValueError("Obstacle map disconnects the legal cells.")
+
+        map_count = self.config.num_contexts if self.config.profile in ("hidden_context", "combined") else 1
+        self.config.obstacle_count = len(layout)
+        if replace_maps:
+            self.context_maps = [set(layout) for _ in range(map_count)]
+            self.context_index = 0
+        self.config.context_maps = [
+            [list(point) for point in sorted(context)] for context in self.context_maps
+        ]
+        self.config.start_position = list(start)
+        self.config.goal_position = list(goal)
+        self.config.manual_wind_direction = wind_direction
+        self.start_position = start
+        self.goal = goal
+        self.agent_state = start
+        self.dormant_obstacle = None
+        self.previous_action = NO_ACTION
+        self.last_events = ["manual_environment_update"]
 
     def _advance_schedules(self) -> None:
         profile = self.config.profile
@@ -258,6 +308,29 @@ class ContinualWindyGridWorld:
                 return self.goal_path[i]
         raise ValueError("No legal goal cell exists.")
 
+    def _initial_goal(self) -> Coord:
+        if self.config.goal_position is not None:
+            goal = tuple(int(v) for v in self.config.goal_position)
+            if goal in self.active_obstacles:
+                raise ValueError("Goal coordinate cannot be an obstacle.")
+            if goal in self.goal_path:
+                self.goal_path_index = self.goal_path.index(goal)
+            return goal
+        return self._first_legal_goal()
+
+    def _initial_start(self) -> Coord:
+        if self.config.start_position is not None:
+            start = tuple(int(v) for v in self.config.start_position)
+            if start == self.goal or start in self.active_obstacles:
+                raise ValueError("Start coordinate must be a legal non-goal cell.")
+            return start
+        return self._random_legal_state(exclude={self.goal})
+
+    def _restart_state(self) -> Coord:
+        if self.start_position != self.goal and self.start_position not in self.active_obstacles:
+            return self.start_position
+        return self._random_legal_state(exclude={self.goal})
+
     def _random_legal_state(self, exclude: Optional[Set[Coord]] = None) -> Coord:
         excluded = set() if exclude is None else set(exclude)
         legal = [
@@ -299,6 +372,7 @@ class ContinualWindyGridWorld:
             "goal_path_direction": self.goal_path_direction,
             "dormant_obstacle": self.dormant_obstacle,
             "goal": self.goal,
+            "start_position": self.start_position,
             "agent_state": self.agent_state,
             "previous_action": self.previous_action,
             "context_maps": [sorted(m) for m in self.context_maps],
@@ -316,6 +390,7 @@ class ContinualWindyGridWorld:
         self.dormant_obstacle = None if state["dormant_obstacle"] is None else tuple(state["dormant_obstacle"])
         self.goal = tuple(state["goal"])
         self.agent_state = tuple(state["agent_state"])
+        self.start_position = tuple(state.get("start_position", self.config.start_position or self.agent_state))
         self.previous_action = int(state["previous_action"])
         self.context_maps = [{tuple(p) for p in layout} for layout in state["context_maps"]]
         self.goal_path = [tuple(p) for p in state["goal_path"]]

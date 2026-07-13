@@ -2,6 +2,7 @@
 
 import csv
 import random
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
@@ -20,6 +21,7 @@ class Trainer:
     def __init__(self, config: AppConfig, base_dir: Optional[Union[str, Path]] = None, run_id: Optional[str] = None):
         config.validate()
         self.config = config
+        self.state_lock = threading.RLock()
         self.base_dir = Path(base_dir or Path.cwd()).resolve()
         self.run_id = run_id or datetime.now().strftime("%Y%m%d-%H%M%S")
         self.environment = ContinualWindyGridWorld(config.environment)
@@ -41,7 +43,7 @@ class Trainer:
     def step_count(self) -> int:
         return self.environment.step_count
 
-    def step_once(self) -> Dict[str, Any]:
+    def step_once(self, with_snapshot: bool = True) -> Dict[str, Any]:
         next_observation, reward, terminated, truncated, info = self.environment.step(self.current_action)
         if terminated or truncated:
             raise RuntimeError("The continuing environment must never terminate or truncate.")
@@ -70,23 +72,41 @@ class Trainer:
             self._append_log_row(delta, alpha_summary)
         if self.step_count % self.config.training.auto_checkpoint_steps == 0:
             self.save()
-        return self.snapshot()
+        return self.snapshot() if with_snapshot else {}
 
-    def run_steps(self, count: int) -> Dict[str, Any]:
-        snapshot = self.snapshot()
-        for _ in range(int(count)):
-            snapshot = self.step_once()
-        return snapshot
+    def run_steps(self, count: int, stop_event=None) -> Dict[str, Any]:
+        with self.state_lock:
+            snapshot = self.snapshot()
+            for _ in range(int(count)):
+                if stop_event is not None and stop_event.is_set():
+                    break
+                self.step_once(with_snapshot=False)
+            return self.snapshot()
 
     def snapshot(self) -> Dict[str, Any]:
-        summary = self.metrics.summary(self.step_count)
-        summary.update(self.agent.step_size_summary())
-        summary.update(
-            {
+        with self.state_lock:
+            summary = self.metrics.summary(self.step_count)
+            summary.update(self.agent.step_size_summary())
+            policies = []
+            previous_action = self.environment.previous_action
+            gx, gy = self.environment.goal
+            obstacles = self.environment.active_obstacles
+            for y in range(self.environment.height):
+                row = []
+                for x in range(self.environment.width):
+                    if (x, y) in obstacles:
+                        row.append(None)
+                    else:
+                        observation = (x, y, gx, gy, previous_action)
+                        row.append(self.agent.action_probabilities(observation).tolist())
+                policies.append(row)
+            summary.update(
+                {
                 "reward_rate": float(self.agent.reward_rate),
                 "last_reward": float(self.last_reward),
                 "last_delta": float(self.agent.last_delta),
                 "agent_state": self.environment.agent_state,
+                "start_position": self.environment.start_position,
                 "goal": self.environment.goal,
                 "obstacles": sorted(self.environment.active_obstacles),
                 "dormant_obstacle": self.environment.dormant_obstacle,
@@ -96,22 +116,61 @@ class Trainer:
                 "wind": self.environment.wind_vector(self.environment.agent_state),
                 "next_action": ACTION_NAMES[self.current_action],
                 "events": list(self.environment.last_events),
+                "manual_wind_direction": self.environment.config.manual_wind_direction,
+                "policy_probabilities": policies,
                 "curves": self.metrics.curves(),
                 "iht_used": len(self.coder.iht.dictionary),
                 "iht_size": self.coder.iht.size,
                 "iht_collisions": self.coder.iht.overfull_count,
-            }
-        )
-        return summary
+                }
+            )
+            return summary
+
+    def apply_environment_configuration(
+        self, obstacles, start, goal, wind_direction: str, environment_config=None
+    ) -> Dict[str, Any]:
+        """Apply a live environment edit while retaining learned agent parameters."""
+        with self.state_lock:
+            current_layout = set(self.environment.context_maps[self.environment.context_index])
+            desired_config = environment_config or self.environment.config
+            desired_map_count = (
+                desired_config.num_contexts if desired_config.profile in ("hidden_context", "combined") else 1
+            )
+            replace_maps = set(obstacles) != current_layout or desired_map_count != len(self.environment.context_maps)
+            if environment_config is not None:
+                for name in (
+                    "profile", "num_contexts", "reward_goal", "reward_collision", "reward_step",
+                    "max_wind_strength", "wind_period", "target_move_interval", "context_switch_interval",
+                ):
+                    setattr(self.environment.config, name, getattr(environment_config, name))
+            self.environment.apply_manual_configuration(
+                obstacles, start, goal, wind_direction, replace_maps=replace_maps
+            )
+            self.current_observation = self.environment.observation()
+            self.current_action = self.agent.select_action(self.current_observation)
+            return self.snapshot()
+
+    def apply_wind(self, direction: str, strength: int) -> Dict[str, Any]:
+        """Change wind atomically without moving the agent or altering the map."""
+        if direction not in ("auto", "up", "right", "down", "left", "none"):
+            raise ValueError("Unknown wind direction: %s" % direction)
+        if int(strength) < 0:
+            raise ValueError("Max wind strength cannot be negative.")
+        with self.state_lock:
+            self.environment.config.manual_wind_direction = direction
+            self.environment.config.max_wind_strength = int(strength)
+            self.environment.last_events = ["manual_wind_update"]
+            return self.snapshot()
 
     def default_checkpoint_path(self) -> Path:
         folder = self.base_dir / self.config.training.checkpoint_dir / self.run_id
         return folder / ("step-%012d.pkl" % self.step_count)
 
     def save(self, path: Optional[Union[str, Path]] = None) -> Path:
-        destination = Path(path).resolve() if path is not None else self.default_checkpoint_path()
-        self.last_checkpoint = save_checkpoint(destination, self.state_dict())
-        return self.last_checkpoint
+        with self.state_lock:
+            destination = Path(path).resolve() if path is not None else self.default_checkpoint_path()
+            self.last_checkpoint = save_checkpoint(destination, self.state_dict())
+            return self.last_checkpoint
 
     def state_dict(self) -> Dict[str, Any]:
         return {

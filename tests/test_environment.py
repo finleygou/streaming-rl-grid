@@ -65,6 +65,26 @@ class EnvironmentTests(unittest.TestCase):
         env.step(1)
         self.assertIsNone(env.dormant_obstacle)
 
+    def test_manual_environment_update_is_immediate_and_persistent(self):
+        env = self.make_env(max_wind_strength=1)
+        env.apply_manual_configuration({(2, 2)}, (0, 0), (4, 4), "right")
+        self.assertEqual(env.active_obstacles, {(2, 2)})
+        self.assertEqual(env.agent_state, (0, 0))
+        self.assertEqual(env.start_position, (0, 0))
+        self.assertEqual(env.goal, (4, 4))
+        self.assertEqual(env.wind_vector((2, 2)), (1, 0))
+        self.assertEqual(env.config.obstacle_count, 1)
+
+    def test_customize_profile_does_not_advance_automatic_schedules(self):
+        env = self.make_env(profile="customize", wind_period=1, target_move_interval=1,
+                            context_switch_interval=1, manual_wind_direction="none")
+        env.agent_state = (1, 1)
+        env.goal = (4, 4)
+        env.step(4)
+        self.assertEqual(env.wind_phase, 0)
+        self.assertEqual(env.context_index, 0)
+        self.assertEqual(env.goal, (4, 4))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -50,6 +50,7 @@ def tiles(
     num_tilings: int,
     floats: Sequence[float],
     ints: Sequence[int],
+    readonly: bool = False,
 ) -> List[int]:
     """Sutton's asymmetric-offset tiles3 construction."""
 
@@ -61,7 +62,9 @@ def tiles(
         for value in quantized:
             coordinates.append((value + offset) // num_tilings)
             offset += 2 * tiling
-        active.append(iht.get_index(coordinates + list(ints)))
+        index = iht.get_index(coordinates + list(ints), readonly=readonly)
+        if index >= 0:
+            active.append(index)
     return active
 
 
@@ -83,7 +86,7 @@ class DualTileCoder:
     def size(self) -> int:
         return self.iht.size
 
-    def active(self, observation: Sequence[int], action: int) -> np.ndarray:
+    def active(self, observation: Sequence[int], action: int, readonly: bool = False) -> np.ndarray:
         x, y, gx, gy, previous_action = [int(v) for v in observation]
         pos = [
             self._scale(x, self.width),
@@ -93,11 +96,13 @@ class DualTileCoder:
             self._scale_signed(gx - x, self.width - 1),
             self._scale_signed(gy - y, self.height - 1),
         ]
-        first = tiles(self.iht, self.num_tilings, pos, [0, previous_action, int(action)])
-        second = tiles(self.iht, self.num_tilings, relative, [1, previous_action, int(action)])
-        bias = self.iht.get_index(("bias", previous_action, int(action)))
+        first = tiles(self.iht, self.num_tilings, pos, [0, previous_action, int(action)], readonly=readonly)
+        second = tiles(self.iht, self.num_tilings, relative, [1, previous_action, int(action)], readonly=readonly)
+        bias = self.iht.get_index(("bias", previous_action, int(action)), readonly=readonly)
+        if bias >= 0:
+            first.append(bias)
         # Collisions after the IHT fills must not turn a binary feature into a count feature.
-        return np.unique(np.asarray(first + second + [bias], dtype=np.int64))
+        return np.unique(np.asarray(first + second, dtype=np.int64))
 
     def _scale(self, value: int, size: int) -> float:
         denominator = max(1, size - 1)

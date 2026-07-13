@@ -36,12 +36,20 @@ class DifferentialSarsaTIDBD:
             raise ValueError("epsilon must lie in [0, 1].")
         self.config.epsilon = float(value)
 
-    def value(self, observation: Sequence[int], action: int) -> float:
-        active = self.coder.active(observation, action)
+    def value(self, observation: Sequence[int], action: int, readonly: bool = False) -> float:
+        active = self.coder.active(observation, action, readonly=readonly)
         return float(self.weights[active].sum())
 
-    def action_values(self, observation: Sequence[int]) -> np.ndarray:
-        return np.asarray([self.value(observation, action) for action in range(5)], dtype=np.float64)
+    def action_values(self, observation: Sequence[int], readonly: bool = False) -> np.ndarray:
+        return np.asarray([self.value(observation, action, readonly=readonly) for action in range(5)], dtype=np.float64)
+
+    def action_probabilities(self, observation: Sequence[int], readonly: bool = True) -> np.ndarray:
+        """Return the exact epsilon-greedy policy without mutating the tile dictionary."""
+        values = self.action_values(observation, readonly=readonly)
+        best = np.flatnonzero(np.isclose(values, values.max(), rtol=1e-12, atol=1e-12))
+        probabilities = np.full(5, self.config.epsilon / 5.0, dtype=np.float64)
+        probabilities[best] += (1.0 - self.config.epsilon) / len(best)
+        return probabilities
 
     def select_action(self, observation: Sequence[int]) -> int:
         if self.rng.random() < self.config.epsilon:

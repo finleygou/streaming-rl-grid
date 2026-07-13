@@ -4,7 +4,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
 
-PROFILES = ("stationary", "seasonal_wind", "moving_goal", "hidden_context", "combined")
+PROFILES = ("stationary", "seasonal_wind", "moving_goal", "hidden_context", "combined", "customize")
+WIND_CHOICES = ("auto", "up", "right", "down", "left", "none")
 
 
 @dataclass
@@ -24,6 +25,9 @@ class EnvironmentConfig:
     context_switch_interval: int = 3_000
     context_maps: Optional[List[List[List[int]]]] = None
     goal_path: Optional[List[List[int]]] = None
+    start_position: Optional[List[int]] = None
+    goal_position: Optional[List[int]] = None
+    manual_wind_direction: str = "auto"
 
     def validate(self) -> None:
         if self.width < 3 or self.height < 3:
@@ -36,6 +40,16 @@ class EnvironmentConfig:
             raise ValueError("num_contexts must be positive.")
         if self.max_wind_strength < 0:
             raise ValueError("max_wind_strength cannot be negative.")
+        if self.manual_wind_direction not in WIND_CHOICES:
+            raise ValueError("Unknown wind direction: %s" % self.manual_wind_direction)
+        for name in ("start_position", "goal_position"):
+            point = getattr(self, name)
+            if point is not None:
+                if len(point) != 2 or not (0 <= int(point[0]) < self.width and 0 <= int(point[1]) < self.height):
+                    raise ValueError("%s must be an in-bounds [x, y] coordinate." % name)
+        if self.start_position is not None and self.goal_position is not None:
+            if tuple(self.start_position) == tuple(self.goal_position):
+                raise ValueError("Start and goal coordinates must differ.")
         for name in ("wind_period", "target_move_interval", "context_switch_interval"):
             if getattr(self, name) <= 0:
                 raise ValueError("%s must be positive." % name)

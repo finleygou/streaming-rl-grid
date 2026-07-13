@@ -54,6 +54,40 @@ class AgentAndCheckpointTests(unittest.TestCase):
             np.testing.assert_array_equal(restored.agent.beta, expected_beta)
             self.assertEqual(restored.environment.state_dict()["rng_state"], trainer.environment.state_dict()["rng_state"])
 
+    def test_policy_snapshot_is_normalized_without_allocating_visualization_features(self):
+        with tempfile.TemporaryDirectory() as folder:
+            trainer = Trainer(self.config(), base_dir=folder)
+            trainer.run_steps(10)
+            used_before = len(trainer.coder.iht.dictionary)
+            snapshot = trainer.snapshot()
+            used_after = len(trainer.coder.iht.dictionary)
+            self.assertEqual(used_after, used_before)
+            for row in snapshot["policy_probabilities"]:
+                for probabilities in row:
+                    if probabilities is not None:
+                        self.assertAlmostEqual(sum(probabilities), 1.0)
+
+    def test_trainer_applies_live_environment_without_resetting_weights(self):
+        with tempfile.TemporaryDirectory() as folder:
+            trainer = Trainer(self.config(), base_dir=folder)
+            trainer.run_steps(20)
+            weights = trainer.agent.weights.copy()
+            snapshot = trainer.apply_environment_configuration({(1, 1), (2, 1)}, (0, 0), (5, 4), "none")
+            np.testing.assert_array_equal(trainer.agent.weights, weights)
+            self.assertEqual(snapshot["agent_state"], (0, 0))
+            self.assertEqual(snapshot["goal"], (5, 4))
+            self.assertEqual(snapshot["manual_wind_direction"], "none")
+
+    def test_live_wind_change_does_not_relocate_agent(self):
+        with tempfile.TemporaryDirectory() as folder:
+            trainer = Trainer(self.config(), base_dir=folder)
+            trainer.run_steps(20)
+            position = trainer.environment.agent_state
+            snapshot = trainer.apply_wind("left", 2)
+            self.assertEqual(trainer.environment.agent_state, position)
+            self.assertEqual(snapshot["manual_wind_direction"], "left")
+            self.assertEqual(trainer.environment.config.max_wind_strength, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
