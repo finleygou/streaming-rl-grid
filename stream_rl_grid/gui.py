@@ -37,6 +37,13 @@ class TrainingPanel:
         self.selected_obstacle: Optional[Coord] = None
         self.last_snapshot: Optional[Dict[str, Any]] = None
         self._canvas_geometry = (0.0, 0.0, 1.0)
+        self._grid_shape: Optional[Tuple[int, int]] = None
+        self._grid_geometry: Optional[Tuple[float, float, float, int, int]] = None
+        self._grid_cells: Dict[Coord, int] = {}
+        self._grid_cell_fills: Dict[Coord, str] = {}
+        self._policy_lines: Dict[Tuple[int, int, int], int] = {}
+        self._policy_stay: Dict[Coord, int] = {}
+        self._grid_overlays: Dict[str, int] = {}
 
         self.variables: Dict[str, tk.Variable] = {}
         self.metric_labels: Dict[str, ttk.Label] = {}
@@ -587,7 +594,6 @@ class TrainingPanel:
 
     def _draw_grid(self, snapshot: Dict[str, Any], width: int, height: int) -> None:
         canvas = self.grid_canvas
-        canvas.delete("all")
         canvas.update_idletasks()
         available_w = max(300, canvas.winfo_width())
         available_h = max(300, canvas.winfo_height())
@@ -595,6 +601,10 @@ class TrainingPanel:
         ox = (available_w - cell * width) / 2.0
         oy = (available_h - cell * height) / 2.0
         self._canvas_geometry = (ox, oy, cell)
+        self._ensure_grid_items(width, height)
+        geometry = (ox, oy, cell, int(width), int(height))
+        geometry_changed = geometry != self._grid_geometry
+        self._grid_geometry = geometry
         obstacles = {tuple(p) for p in snapshot.get("obstacles", [])}
         dormant = snapshot.get("dormant_obstacle")
         dormant = None if dormant is None else tuple(dormant)
@@ -607,99 +617,150 @@ class TrainingPanel:
                 if point == self.selected_obstacle and self.preview_context == snapshot.get("context_index", 0):
                     fill = "#d65ad1"
                 x0, y0 = ox + x * cell, oy + y * cell
-                canvas.create_rectangle(x0, y0, x0 + cell, y0 + cell, fill=fill, outline="#9a9a9a")
+                item = self._grid_cells[point]
+                if geometry_changed:
+                    canvas.coords(item, x0, y0, x0 + cell, y0 + cell)
+                if self._grid_cell_fills.get(point) != fill:
+                    canvas.itemconfigure(item, fill=fill)
+                    self._grid_cell_fills[point] = fill
 
         policies = snapshot.get("policy_probabilities")
         policy_color = "#86d7a1"
-        if policies:
-            directions = ((0, -1), (1, 0), (0, 1), (-1, 0))
-            for y in range(height):
-                for x in range(width):
-                    if (x, y) in obstacles or policies[y][x] is None:
-                        continue
-                    probabilities = policies[y][x]
-                    cx, cy = ox + (x + 0.5) * cell, oy + (y + 0.5) * cell
-                    for action, (dx, dy) in enumerate(directions):
-                        length = 0.42 * cell * max(0.0, min(1.0, float(probabilities[action])))
-                        if length > 0.35:
-                            canvas.create_line(
-                                cx, cy, cx + dx * length, cy + dy * length,
-                                fill=policy_color, width=max(1, int(cell * 0.028)), capstyle=tk.ROUND,
-                            )
-                    stay_probability = max(0.0, min(1.0, float(probabilities[4])))
-                    radius = 0.11 * cell * stay_probability
-                    if stay_probability <= 1e-12 or radius < 1.25:
-                        dot_radius = max(1.0, min(2.0, cell * 0.025))
-                        canvas.create_oval(cx - dot_radius, cy - dot_radius, cx + dot_radius, cy + dot_radius,
-                                           fill=policy_color, outline=policy_color)
+        directions = ((0, -1), (1, 0), (0, 1), (-1, 0))
+        for y in range(height):
+            for x in range(width):
+                point = (x, y)
+                probabilities = None if not policies or point in obstacles else policies[y][x]
+                cx, cy = ox + (x + 0.5) * cell, oy + (y + 0.5) * cell
+                for action, (dx, dy) in enumerate(directions):
+                    item = self._policy_lines[(x, y, action)]
+                    probability = 0.0 if probabilities is None else max(
+                        0.0, min(1.0, float(probabilities[action]))
+                    )
+                    length = 0.42 * cell * probability
+                    if length > 0.35:
+                        canvas.coords(item, cx, cy, cx + dx * length, cy + dy * length)
+                        canvas.itemconfigure(
+                            item, state=tk.NORMAL, fill=policy_color,
+                            width=max(1, int(cell * 0.028)),
+                        )
                     else:
-                        canvas.create_oval(cx - radius, cy - radius, cx + radius, cy + radius,
-                                           outline=policy_color, width=max(1, int(cell * 0.025)))
+                        canvas.itemconfigure(item, state=tk.HIDDEN)
+
+                stay_item = self._policy_stay[point]
+                if probabilities is None:
+                    canvas.itemconfigure(stay_item, state=tk.HIDDEN)
+                    continue
+                stay_probability = max(0.0, min(1.0, float(probabilities[4])))
+                radius = 0.11 * cell * stay_probability
+                if stay_probability <= 1e-12 or radius < 1.25:
+                    dot_radius = max(1.0, min(2.0, cell * 0.025))
+                    canvas.coords(
+                        stay_item, cx - dot_radius, cy - dot_radius,
+                        cx + dot_radius, cy + dot_radius,
+                    )
+                    canvas.itemconfigure(
+                        stay_item, state=tk.NORMAL, fill=policy_color,
+                        outline=policy_color, width=1,
+                    )
+                else:
+                    canvas.coords(stay_item, cx - radius, cy - radius, cx + radius, cy + radius)
+                    canvas.itemconfigure(
+                        stay_item, state=tk.NORMAL, fill="", outline=policy_color,
+                        width=max(1, int(cell * 0.025)),
+                    )
 
         start = tuple(snapshot.get("start_position", (-1, -1)))
+        start_box = self._grid_overlays["start_box"]
+        start_label = self._grid_overlays["start_label"]
         if 0 <= start[0] < width and 0 <= start[1] < height:
             x0, y0 = ox + start[0] * cell, oy + start[1] * cell
-            canvas.create_rectangle(x0 + 0.08 * cell, y0 + 0.08 * cell, x0 + 0.92 * cell, y0 + 0.92 * cell,
-                                    outline="#28a060", width=max(2, int(cell * 0.04)))
-            canvas.create_text(x0 + 0.14 * cell, y0 + 0.12 * cell, text="S", anchor="nw", fill="#1b7947")
+            canvas.coords(
+                start_box, x0 + 0.08 * cell, y0 + 0.08 * cell,
+                x0 + 0.92 * cell, y0 + 0.92 * cell,
+            )
+            canvas.itemconfigure(
+                start_box, state=tk.NORMAL, outline="#28a060",
+                width=max(2, int(cell * 0.04)),
+            )
+            canvas.coords(start_label, x0 + 0.14 * cell, y0 + 0.12 * cell)
+            canvas.itemconfigure(start_label, state=tk.NORMAL, text="S", fill="#1b7947")
+        else:
+            canvas.itemconfigure(start_box, state=tk.HIDDEN)
+            canvas.itemconfigure(start_label, state=tk.HIDDEN)
+
         goal = tuple(snapshot.get("goal", (-1, -1)))
         agent = tuple(snapshot.get("agent_state", (-1, -1)))
+        goal_item = self._grid_overlays["goal"]
         if 0 <= goal[0] < width and 0 <= goal[1] < height:
             x0, y0 = ox + goal[0] * cell, oy + goal[1] * cell
-            canvas.create_oval(x0 + 0.18 * cell, y0 + 0.18 * cell, x0 + 0.82 * cell, y0 + 0.82 * cell,
-                               fill="#32b5d2", outline="")
+            canvas.coords(
+                goal_item, x0 + 0.18 * cell, y0 + 0.18 * cell,
+                x0 + 0.82 * cell, y0 + 0.82 * cell,
+            )
+            canvas.itemconfigure(goal_item, state=tk.NORMAL, fill="#32b5d2", outline="")
+        else:
+            canvas.itemconfigure(goal_item, state=tk.HIDDEN)
+
+        agent_item = self._grid_overlays["agent"]
         if 0 <= agent[0] < width and 0 <= agent[1] < height:
             x0, y0 = ox + agent[0] * cell, oy + agent[1] * cell
-            canvas.create_text(x0 + cell / 2, y0 + cell / 2, text="A", fill="#2446d8",
-                               font=("Segoe UI", max(10, int(cell * 0.42)), "bold"))
+            canvas.coords(agent_item, x0 + cell / 2, y0 + cell / 2)
+            canvas.itemconfigure(
+                agent_item, state=tk.NORMAL, text="A", fill="#2446d8",
+                font=("Segoe UI", max(10, int(cell * 0.42)), "bold"),
+            )
+        else:
+            canvas.itemconfigure(agent_item, state=tk.HIDDEN)
+
         wind = snapshot.get("wind", (0, 0))
-        canvas.create_text(
-            ox, max(12, oy - 22), anchor="w",
+        status_item = self._grid_overlays["status"]
+        canvas.coords(status_item, ox, max(12, oy - 22))
+        canvas.itemconfigure(
+            status_item, state=tk.NORMAL, anchor="w",
             text="map %s | wind %s | events: %s" % (
                 snapshot.get("context_index", 0), wind, ", ".join(snapshot.get("events", [])) or "-"
             ), fill="#333",
         )
 
-    def _draw_grid_legacy(self, snapshot: Dict[str, Any], width: int, height: int) -> None:
+    def _ensure_grid_items(self, width: int, height: int) -> None:
+        """Create persistent canvas items once; rebuild only when grid shape changes."""
+        shape = (int(width), int(height))
+        if self._grid_shape == shape:
+            return
         canvas = self.grid_canvas
-        canvas.delete("all")
-        canvas.update_idletasks()
-        available_w = max(300, canvas.winfo_width())
-        available_h = max(300, canvas.winfo_height())
-        cell = max(8.0, min((available_w - 40) / width, (available_h - 60) / height))
-        ox = (available_w - cell * width) / 2.0
-        oy = (available_h - cell * height) / 2.0
-        self._canvas_geometry = (ox, oy, cell)
-        obstacles = {tuple(p) for p in snapshot.get("obstacles", [])}
-        dormant = snapshot.get("dormant_obstacle")
-        dormant = None if dormant is None else tuple(dormant)
+        canvas.delete("grid-layer")
+        self._grid_shape = shape
+        self._grid_geometry = None
+        self._grid_cells.clear()
+        self._grid_cell_fills.clear()
+        self._policy_lines.clear()
+        self._policy_stay.clear()
+        self._grid_overlays.clear()
         for y in range(height):
             for x in range(width):
                 point = (x, y)
-                fill = "#f7f7f7"
-                if point in obstacles:
-                    fill = "#d9a441"
-                if point == dormant:
-                    fill = "#f4dfad"
-                if point == self.selected_obstacle and self.preview_context == snapshot.get("context_index", 0):
-                    fill = "#d65ad1"
-                x0, y0 = ox + x * cell, oy + y * cell
-                canvas.create_rectangle(x0, y0, x0 + cell, y0 + cell, fill=fill, outline="#9a9a9a")
-        goal = tuple(snapshot.get("goal", (-1, -1)))
-        agent = tuple(snapshot.get("agent_state", (-1, -1)))
-        if 0 <= goal[0] < width and 0 <= goal[1] < height:
-            x0, y0 = ox + goal[0] * cell, oy + goal[1] * cell
-            canvas.create_oval(x0 + 0.18 * cell, y0 + 0.18 * cell, x0 + 0.82 * cell, y0 + 0.82 * cell,
-                               fill="#32b5d2", outline="")
-        if 0 <= agent[0] < width and 0 <= agent[1] < height:
-            x0, y0 = ox + agent[0] * cell, oy + agent[1] * cell
-            canvas.create_text(x0 + cell / 2, y0 + cell / 2, text="★", fill="#2446d8",
-                               font=("Segoe UI Symbol", max(10, int(cell * 0.45)), "bold"))
-        wind = snapshot.get("wind", (0, 0))
-        canvas.create_text(ox, max(12, oy - 22), anchor="w",
-                           text="map %s | wind %s | events: %s" % (
-                               snapshot.get("context_index", 0), wind, ", ".join(snapshot.get("events", [])) or "-"
-                           ), fill="#333")
+                self._grid_cells[point] = canvas.create_rectangle(
+                    0, 0, 0, 0, outline="#9a9a9a", tags=("grid-layer", "grid-cell")
+                )
+                for action in range(4):
+                    self._policy_lines[(x, y, action)] = canvas.create_line(
+                        0, 0, 0, 0, state=tk.HIDDEN, capstyle=tk.ROUND,
+                        tags=("grid-layer", "policy"),
+                    )
+                self._policy_stay[point] = canvas.create_oval(
+                    0, 0, 0, 0, state=tk.HIDDEN, tags=("grid-layer", "policy")
+                )
+        self._grid_overlays = {
+            "start_box": canvas.create_rectangle(0, 0, 0, 0, state=tk.HIDDEN, tags=("grid-layer",)),
+            "start_label": canvas.create_text(0, 0, state=tk.HIDDEN, anchor="nw", tags=("grid-layer",)),
+            "goal": canvas.create_oval(0, 0, 0, 0, state=tk.HIDDEN, tags=("grid-layer",)),
+            "agent": canvas.create_text(0, 0, state=tk.HIDDEN, tags=("grid-layer",)),
+            "status": canvas.create_text(0, 0, state=tk.HIDDEN, anchor="w", tags=("grid-layer",)),
+        }
+
+    def _draw_grid_legacy(self, snapshot: Dict[str, Any], width: int, height: int) -> None:
+        self._draw_grid(snapshot, width, height)
 
     def _on_close(self) -> None:
         if self.worker and self.worker.is_alive():
