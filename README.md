@@ -15,37 +15,32 @@
 
 动作值函数是线性的：
 
-```text
-Q(s, a) = w^T x(s, a)
-```
+$$Q(s, a) = w^T x(s, a)$$
+
 
 差分 Sarsa TD error 不包含折扣因子：
 
-```text
-delta = reward - R_bar + Q(next_state, next_action) - Q(state, action)
-```
+$$delta = reward - R_bar + Q(next_state, next_action) - Q(state, action)$$
 
 平均奖励估计为：
 
-```text
-R_bar <- R_bar + eta * delta
-```
+$$ R_bar <- R_bar + eta * delta $$
 
 资格迹采用 replacing traces：
 
-```text
+$$
 z <- lambda * z
 z[active_features] <- 1
-```
+$$
 
-TIDBD 为每个权重维护 `beta_i = log(alpha_i)` 和元迹 `H_i`：
+TIDBD 为每个权重维护 $`$beta_i = log(alpha_i)$`$ 和元迹 $H_i$：
 
-```text
+$$
 beta_i <- beta_i + theta * delta * x_i * H_i
 alpha_i <- exp(beta_i)
 w_i <- w_i + alpha_i * delta * z_i
 H_i <- H_i * max(0, 1 - alpha_i * x_i * z_i) + alpha_i * delta * z_i
-```
+$$
 
 实现不叠加 ObGD，以免改变 TIDBD 实验含义；只设置宽松的 `beta` 数值边界并检测 NaN/Inf。
 
@@ -53,9 +48,9 @@ H_i <- H_i * max(0, 1 - alpha_i * x_i * z_i) + alpha_i * delta * z_i
 
 智能体可观察：
 
-```text
+$$
 (current_x, current_y, goal_x, goal_y, previous_action)
-```
+$$
 
 它看不到风阶段、奖励阶段、地图模式编号或全局时钟。
 
